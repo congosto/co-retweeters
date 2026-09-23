@@ -6,12 +6,12 @@ output:
 
 params:
     data_path: "../data"          # Path raiz de los datos
-    dataset_name: "mi_dataset"    # Nombre del dataset
-    prefix: "mi_dataset"          # Prefijo dentro del dataset
+    dataset_name: "mi_dataset"        # Nombre del dataset
+    prefix: "mi_dataset"              # Prefijo dentro del dataset
     min_retweets_msg: 50          # Mínimo de Rts para ser analizado
     max_retweets_msg: 100000      # Máximo de Rts para ser analizado
     min_shared_tweets: 50         # Mínimo de coincidencias en mensajes con otros usuarios
-    author: ""                    # Autor del análisis (pie de los gráficos)
+    author: ""           # Autor del análisis (pie de los gráficos)
     color: "#63BE21"              # color comunidad: Solo para n_beneficiarios = 1
     seed: 1234                    # Semilla para que las comunidades sean reproducibles
     python_mode: "python"         # "conda" = entorno conda | "python" = instalación normal de Python
@@ -22,18 +22,24 @@ params:
 ---
 
 ```{r config, include=FALSE}
-# config.local.yml (no se sube a GitHub) sustituye a los params del YAML.
-# Su bloque "equipos" tiene valores propios de cada ordenador (clave = Sys.info()[["nodename"]]).
+# El bloque "equipos" de config.local.yml (no se sube a GitHub) sustituye a los params
+# del YAML con los valores de cada ordenador, p. ej. la ruta de Python (clave = Sys.info()[["nodename"]]).
 # Se usa cfg en lugar de params porque rmarkdown no deja modificar params.
 cfg <- params
-config_file <- "config.local.yml"
-if (file.exists(config_file)) {
-  config_local <- yaml::read_yaml(config_file)
-  equipos <- config_local$equipos
-  config_local$equipos <- NULL
-  cfg <- modifyList(cfg, config_local)
-  equipo <- Sys.info()[["nodename"]]
-  if (!is.null(equipos[[equipo]])) cfg <- modifyList(cfg, equipos[[equipo]])
+# Se busca también en notebooks/ por si los chunks se ejecutan desde la raíz del proyecto
+config_file <- c("config.local.yml", "notebooks/config.local.yml")
+config_file <- config_file[file.exists(config_file)][1]
+equipo <- Sys.info()[["nodename"]]
+if (is.na(config_file)) {
+  message("No se encuentra config.local.yml desde ", getwd(), ": se usan los params del YAML")
+} else {
+  equipo_cfg <- yaml::read_yaml(config_file)$equipos[[equipo]]
+  if (is.null(equipo_cfg)) {
+    message("config.local.yml no tiene bloque para el equipo ", equipo, ": se usan los params del YAML")
+  } else {
+    cfg <- modifyList(cfg, equipo_cfg)
+    message("Configuración del equipo ", equipo, " cargada de ", normalizePath(config_file))
+  }
 }
 ```
 

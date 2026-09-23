@@ -1,15 +1,8 @@
-# Plantilla de configuración local.
+# Plantilla de la configuración de cada equipo.
 # Cópiala como config.local.yml (no se sube a GitHub) y rellénala.
-# Cualquier parámetro del YAML del Rmd se puede sustituir aquí.
+# Los valores de cada bloque sustituyen a los params de la cabecera del Rmd.
+# La clave es el nombre del equipo, que en R se ve con Sys.info()[["nodename"]]
 
-dataset_name: "mi_dataset"
-prefix: "mi_dataset"
-author: "@mi_usuario"     # Firma que aparece al pie de los gráficos
-# min_retweets_msg: 50
-# min_shared_tweets: 50
-
-# Valores propios de cada ordenador. La clave es el nombre del equipo,
-# que en R se ve con Sys.info()[["nodename"]]
 equipos:
   MI_PORTATIL:
     python_mode: "python"

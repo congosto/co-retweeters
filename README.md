@@ -39,14 +39,21 @@ co-retweeters/
 ## Uso
 
 1. Copia los datos en `data/<dataset>/<prefix>_RTs.csv`. El fichero necesita las columnas `username` (quien retuitea) y `url_rt` (URL del tweet retuiteado). Opcionalmente, `user_retweeted` (usuario retuiteado) se usa si no se puede sacar de la URL.
-2. Copia `notebooks/config.example.yml` como `notebooks/config.local.yml` y rellénalo:
+2. Rellena los `params` de la cabecera de `notebooks/co-retweeters.Rmd`:
    - `dataset_name` y `prefix`;
    - `author`, tu firma al pie de los gráficos;
-   - cómo ejecutar Python: `python_mode: "conda"` con `conda_env`, o `python_mode: "python"` con `python_path` (vacío = el `python` del PATH);
-   - opcionalmente, un bloque `equipos` con valores distintos para cada ordenador (la clave es `Sys.info()[["nodename"]]`).
-3. Abre `co-retweeters.Rproj` en RStudio y haz *Knit* de `notebooks/co-retweeters.Rmd`.
+   - cómo ejecutar Python: `python_mode: "conda"` con `conda_env`, o `python_mode: "python"` con `python_path` (vacío = el `python` del PATH).
+3. Opcional, si usas el cuaderno en varios ordenadores: copia `notebooks/config.example.yml` como `notebooks/config.local.yml` y pon en su bloque `equipos` los valores de cada uno, por ejemplo la ruta de Python. La clave es `Sys.info()[["nodename"]]`, y esos valores sustituyen a los de la cabecera. `config.local.yml` no se sube al repositorio.
+4. Abre `co-retweeters.Rproj` en RStudio y haz *Knit* de `notebooks/co-retweeters.Rmd`.
 
-`config.local.yml` no se sube al repositorio. Sus valores sustituyen a los del YAML del Rmd, así que los umbrales también se pueden ajustar ahí. Si no existe, se usan los del YAML.
+### Subir cambios sin datos personales
+
+`.gitattributes` aplica al Rmd el filtro `params-limpios` (`scripts/limpiar-params.sed`): al hacer commit, la cabecera se guarda con los valores genéricos de dataset, autor y rutas de Python, y tu copia de trabajo no cambia. Para activarlo en tu clon:
+
+```bash
+git config filter.params-limpios.clean "sed -E -f scripts/limpiar-params.sed"
+git config filter.params-limpios.required true
+```
 
 También se puede calcular solo las coincidencias desde la línea de comandos (desde `scripts/`):
 

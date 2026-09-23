@@ -1,0 +1,2 @@
+# Los parámetros personales de la cabecera se limpian al hacer commit (scripts/limpiar-params.sed)
+notebooks/co-retweeters.Rmd filter=params-limpios
