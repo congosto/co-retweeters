@@ -4,6 +4,7 @@
 
 dataset_name: "mi_dataset"
 prefix: "mi_dataset"
+author: "@mi_usuario"     # Firma que aparece al pie de los gráficos
 # min_retweets_msg: 50
 # min_shared_tweets: 50
 

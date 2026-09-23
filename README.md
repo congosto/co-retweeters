@@ -41,6 +41,7 @@ co-retweeters/
 1. Copia los datos en `data/<dataset>/<prefix>_RTs.csv`. El fichero necesita las columnas `username` (quien retuitea) y `url_rt` (URL del tweet retuiteado). Opcionalmente, `user_retweeted` (usuario retuiteado) se usa si no se puede sacar de la URL.
 2. Copia `notebooks/config.example.yml` como `notebooks/config.local.yml` y rellénalo:
    - `dataset_name` y `prefix`;
+   - `author`, tu firma al pie de los gráficos;
    - cómo ejecutar Python: `python_mode: "conda"` con `conda_env`, o `python_mode: "python"` con `python_path` (vacío = el `python` del PATH);
    - opcionalmente, un bloque `equipos` con valores distintos para cada ordenador (la clave es `Sys.info()[["nodename"]]`).
 3. Abre `co-retweeters.Rproj` en RStudio y haz *Knit* de `notebooks/co-retweeters.Rmd`.

@@ -11,7 +11,7 @@ params:
     min_retweets_msg: 50          # Mínimo de Rts para ser analizado
     max_retweets_msg: 100000      # Máximo de Rts para ser analizado
     min_shared_tweets: 50         # Mínimo de coincidencias en mensajes con otros usuarios
-    author: "@congosto"           # Autor del análisis
+    author: ""                    # Autor del análisis (pie de los gráficos)
     color: "#63BE21"              # color comunidad: Solo para n_beneficiarios = 1
     seed: 1234                    # Semilla para que las comunidades sean reproducibles
     python_mode: "python"         # "conda" = entorno conda | "python" = instalación normal de Python
@@ -234,14 +234,16 @@ geom_text(
       "<span style='color:", col_filtrado, ";'><b>Filtrado</b></span>"
     ),
     x = "",
-    y = NULL
+    y = NULL,
+    caption = cfg$author
   ) +
-  
+
   theme_minimal(base_size = 14) +
   theme(
     axis.text.x = element_text(angle = 0, hjust = 0.5),
     legend.position = "none",
-    plot.title = element_markdown(size = 18, face = "bold")
+    plot.title = element_markdown(size = 18, face = "bold"),
+    plot.caption = element_text(hjust = 1, size = 10, color = COLOR_TEXTO)
   ) +
   # Añadir al ggplot:
   annotate(
@@ -540,14 +542,16 @@ for (comm in communities) {
       "<span style='color:", color_anotacion, ";'><b>Co-retweeters</b></span>"
     ),
     x = "",
-    y = NULL
+    y = NULL,
+    caption = cfg$author
   ) +
-  
+
   theme_minimal(base_size = 14) +
   theme(
     axis.text.x = element_text(angle = 0, hjust = 0.5),
     legend.position = "none",
-    plot.title = element_markdown(size = 18, face = "bold")
+    plot.title = element_markdown(size = 18, face = "bold"),
+    plot.caption = element_text(hjust = 1, size = 10, color = COLOR_TEXTO)
   ) +
   # Añadir al ggplot:
   annotate(
@@ -627,12 +631,14 @@ for (comm in communities) {
     labs(
       title = paste("Histograma de Co-retweeters – Comunidad", comm),
       x = "",
-      y = "Frecuencia"
+      y = "Frecuencia",
+      caption = cfg$author
     ) +
     theme_minimal() +
     theme(
       legend.position = "none",
       plot.title = element_text(color = COLOR_TEXTO),
+      plot.caption = element_text(hjust = 1, size = 10, color = COLOR_TEXTO),
       axis.title.x = element_text(color = COLOR_TEXTO),
       axis.title.y = element_text(color = COLOR_TEXTO),
       axis.text.x = element_text(color = COLOR_TEXTO),
@@ -689,12 +695,14 @@ for (comm in communities) {
     labs(
       title = paste("Relación entre Co-retweeters y Retweets – Comunidad", comm),
       x = "Co-retweeters",
-      y = "Retweets"
+      y = "Retweets",
+      caption = cfg$author
     ) +
     theme_minimal() +
     theme(
       legend.position = "none",
       plot.title = element_text(color = COLOR_TEXTO),
+      plot.caption = element_text(hjust = 1, size = 10, color = COLOR_TEXTO),
       axis.title.x = element_text(color = COLOR_TEXTO),
       axis.title.y = element_text(color = COLOR_TEXTO),
       axis.text.x = element_text(color = COLOR_TEXTO),
