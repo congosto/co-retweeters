@@ -1,0 +1,24 @@
+# Datos: contienen nombres de usuario reales y son grandes. Solo se sube el README
+data/*
+!data/README.md
+
+# Configuración local (rutas de Python, dataset...). Ver notebooks/config.example.yml
+notebooks/config.local.yml
+
+# Documentación interna para Claude Code
+CLAUDE.md
+.claude/
+
+# R / RStudio
+.Rhistory
+.RData
+.Rproj.user/
+
+# Informes generados
+*.html
+notebooks/*_files/
+notebooks/*_cache/
+
+# Python
+__pycache__/
+*.pyc

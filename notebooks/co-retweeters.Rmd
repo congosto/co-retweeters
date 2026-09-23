@@ -1,0 +1,986 @@
+---
+title: "Detección de los co-retweeters"
+output: 
+  html_document:
+    df_print: paged
+
+params:
+    data_path: "../data"          # Path raiz de los datos
+    dataset_name: "mi_dataset"    # Nombre del dataset
+    prefix: "mi_dataset"          # Prefijo dentro del dataset
+    min_retweets_msg: 50          # Mínimo de Rts para ser analizado
+    max_retweets_msg: 100000      # Máximo de Rts para ser analizado
+    min_shared_tweets: 50         # Mínimo de coincidencias en mensajes con otros usuarios
+    author: "@congosto"           # Autor del análisis
+    color: "#63BE21"              # color comunidad: Solo para n_beneficiarios = 1
+    seed: 1234                    # Semilla para que las comunidades sean reproducibles
+    python_mode: "python"         # "conda" = entorno conda | "python" = instalación normal de Python
+    python_path: ""               # Solo python_mode = "python": ruta a python.exe. Vacío = el python del PATH
+    conda_env: "reticulate"       # Solo python_mode = "conda": nombre (o ruta) del entorno conda
+    conda_path: ""                # Solo python_mode = "conda": ruta a conda.exe. Vacío = detección automática
+                                  # En ambos casos Python necesita pandas y tqdm
+---
+
+```{r config, include=FALSE}
+# config.local.yml (no se sube a GitHub) sustituye a los params del YAML.
+# Su bloque "equipos" tiene valores propios de cada ordenador (clave = Sys.info()[["nodename"]]).
+# Se usa cfg en lugar de params porque rmarkdown no deja modificar params.
+cfg <- params
+config_file <- "config.local.yml"
+if (file.exists(config_file)) {
+  config_local <- yaml::read_yaml(config_file)
+  equipos <- config_local$equipos
+  config_local$equipos <- NULL
+  cfg <- modifyList(cfg, config_local)
+  equipo <- Sys.info()[["nodename"]]
+  if (!is.null(equipos[[equipo]])) cfg <- modifyList(cfg, equipos[[equipo]])
+}
+```
+
+Los co-retweeters son perfiles que coinciden al difundir los mismos mensajes. Que dos personas no coordinadas coincidan al retuitear los mismos mensajes más de n veces es poco probable. Pero que esto ocurra con cientos de perfiles es aún más difícil.
+
+El principal problema es ajustar los parámetros tanto en la detección de los usuarios co-retweeters como en el filtrado por análisis de red.
+
+### Parámetros utilizados
+
+Los parámetros utilizados dependerán de cada dataset y su ajuste es empírico.
+
+Los parámetros usados en este caso son:
+
+-   **Nombre del dataset** = [`r cfg$dataset_name`]{style="color:red"}: Nombre del directorio dónde se encuentra el dataset
+-   **prefijo** = [`r cfg$prefix`]{style="color:red"}: Nombre del prefijo del dataset
+-   **min_retweets_msg** = [`r cfg$min_retweets_msg`]{style="color:red"}: descarta los mensajes con el número de RTs menor que este parámetro. Este valor no es muy restrictivo y puede hacer el dataset más fácil de procesar sin perder la detección de los co-retweeters.
+-   **max_retweets_msg** [`r cfg$max_retweets_msg`]{style="color:red"}: descarta los mensajes con el número de RTs mayor que este parámetro. Si se disminuye este valor para descartar tweets virales, el tiempo de ejecución disminuye drásticamente. No obstante, puede alterar el resultado al generar un contador de co-retweets mucho menor o no detectar a los que se coinciden solo en tweets virales.
+-   **min_shared_tweets** = [`r cfg$min_shared_tweets`]{style="color:red"}: Este parámetro pone el umbral de número de coincidencias al retuitear para considerar a dos perfiles co-retweeters. Antes de procesar descarta a los usuarios que han retuiteado menos que este valor, ya que no entrarían en el grupo de co-retweeters. Cuanto más alto sea este valor, menor será el número de co-retweeters.
+```{r setup, 	echo = FALSE,message = FALSE,	warning = FALSE,include=FALSE, cache = FALSE}
+library(knitr)
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+## setting working directory
+knitr::opts_knit$set(root.dir = "./")
+```
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+if(!"tidyverse" %in% installed.packages()) {install.packages("tidyverse")}
+if(!"glue" %in% installed.packages()) {install.packages("glue")}
+if(!"igraph" %in% installed.packages()) {install.packages("igraph")}
+if(!"ggraph" %in% installed.packages()) {install.packages("ggraph")}
+if(!"tidygraph" %in% installed.packages()) {install.packages("tidygraph")}
+if (!require("ForceAtlas2")) devtools::install_github("analyxcompany/ForceAtlas2")
+if(!"kableExtra" %in% installed.packages()) {install.packages("kableExtra")}
+if(!"ggtext" %in% installed.packages()) {install.packages("ggtext")}
+if(!"stRoke" %in% installed.packages()) {install.packages("stRoke")}
+if(!"RColorBrewer" %in% installed.packages()) {install.packages("RColorBrewer")}
+if(!"colorspace" %in% installed.packages()) {install.packages("colorspace")}
+if(!"reticulate" %in% installed.packages()) {install.packages("reticulate")}
+library("tidyverse")        # Manejo de datos y gráficas
+library("glue")             # Pegado de strings
+library("igraph")           # grafos
+library("ggraph")           # grafos
+library("tidygraph")        # grafos
+library("ForceAtlas2")      # grafos layout
+library("kableExtra")       # tablas en knit
+library("reticulate")       # ejecución en Python
+library("ggtext")           # color elementos
+library("stRoke")       # utilidades de colores
+library("RColorBrewer")     # paleta de es suaves
+library("colorspace")  #colores oscuro de paleta
+options(kableExtra.html.bsTable = TRUE)
+```
+
+```{r funtions, include=FALSE}
+source("utils/net.R")   # Funciones generales de visualización
+
+```
+
+```{r environment, message=FALSE, warning=FALSE}
+
+## Entorno de Python según cfg$python_mode
+if (cfg$python_mode == "python") {
+  # Instalación normal de Python: ruta indicada o, si está vacía, el python del PATH
+  python_exe <- if (nzchar(cfg$python_path)) cfg$python_path else Sys.which("python")
+  if (!nzchar(python_exe) || !file.exists(python_exe)) {
+    stop("No se encuentra Python. Indica la ruta a python.exe en python_path (config.local.yml o YAML del Rmd)")
+  }
+  use_python(python_exe, required = TRUE)
+} else if (cfg$python_mode == "conda") {
+  # Entorno conda: conda.exe indicado o detección automática
+  conda_exe <- if (nzchar(cfg$conda_path)) cfg$conda_path else "auto"
+  use_condaenv(cfg$conda_env, conda = conda_exe, required = TRUE)
+} else {
+  stop('python_mode debe ser "python" o "conda"')
+}
+## Entorno por defecto. No tocar salvo que se quiera usar otro entorno
+data_path <- file.path(cfg$data_path, cfg$dataset_name) # Directorio de datos
+RTs_file <- file.path(data_path, glue("{cfg$prefix}_RTs.csv")) # tweets retuits
+co_retweets_file <- file.path(data_path, glue("{cfg$prefix}_co_retweets.csv"))
+co_retweets_top_file <- file.path(data_path, glue("{cfg$prefix}_co_retweets_top.csv"))
+co_retweets_tot_file <- file.path(data_path, glue("{cfg$prefix}_co_retweets_tot.csv"))
+COLOR_TEXTO =  "#5a5856"
+top_users <- 25
+min_members <- 10
+nodos_grafo_beneficiarios <- 50 # Nº de nodos (co-retweeters + beneficiarios) que se dibujan en el grafo de beneficiarios
+nodos_grafo_co_retweeters <- 50 # Nº de nodos que se dibujan en el grafo de parejas de co-retweeters
+
+if (!file.exists(RTs_file)) stop(glue("No existe el fichero {RTs_file}"))
+
+```
+
+```{r read_files, message=FALSE, warning=FALSE, results='hide', echo = FALSE }
+# Lectura de fichero, filtrado y métricas
+source_python("../scripts/co-retweeters.py")
+
+# Leemos el fichero de RTs desde python que es más rápido
+res <- get_RTs(
+  data_path,
+  cfg$prefix,
+  as.integer(cfg$min_retweets_msg),
+  as.integer(cfg$max_retweets_msg),
+  as.integer(cfg$min_shared_tweets)
+)
+
+retweets <- as_tibble(res$retweets)
+KPIs_raw <- res$KPIs_raw
+KPIs_filtered <- res$KPIs_filtered
+# RTs hechos por cada retweeter (dataset filtrado)
+origins_count_df <- as_tibble(res$origins_count)
+# RTs recibidos por cada beneficiario (dataset completo)
+users_target_count_df <- as_tibble(res$users_target_count)
+
+```
+
+## KPIs del dataset [`r cfg$prefix`]{style="color:red"}
+
+```{r message=FALSE, warning=FALSE, results='asis', echo=FALSE}
+
+
+KPIs_raw_df <- as.data.frame(as.list(KPIs_raw))
+KPIs_filtered_df <- as.data.frame(as.list(KPIs_filtered))
+KPIs_raw_df$tipo <- "Original"
+KPIs_filtered_df$tipo <- "Filtrado"
+KPIs_combinados <- rbind(KPIs_raw_df, KPIs_filtered_df)
+KPIs_combinados <-KPIs_combinados  %>%
+mutate(
+   across( c(n_RTs, n_tweets, n_retweeters, n_beneficiarios),
+    ~ format(.x, big.mark = ".", decimal.mark = ",", scientific = FALSE) )
+) %>%
+  select(tipo, n_tweets, n_retweeters, n_RTs, n_beneficiarios)
+
+knitr::kable(KPIs_combinados, caption = "KPIs: Original vs Filtrado")
+
+```
+
+```{r KPIs Gráficas}
+
+
+df_long <- rbind(KPIs_raw_df, KPIs_filtered_df) %>%
+  pivot_longer(
+    cols = c(n_tweets, n_retweeters, n_RTs, n_beneficiarios),
+    names_to = "variable",
+    values_to = "valor"
+  )
+df_long$tipo <- factor(df_long$tipo, levels = c("Original", "Filtrado"))
+# Colores elegidos
+col_original <- "#1f78b4"
+col_filtrado <- "#33a02c"
+
+# Calcular el % antes del ggplot
+pct_rts <- df_long %>%
+  filter(variable == "n_RTs") %>%
+  summarise(pct = round(valor[tipo == "Filtrado"] * 100 / valor[tipo == "Original"], 1)) %>%
+  pull(pct)
+media_rts <- df_long %>%
+  filter(tipo == "Filtrado") %>%
+  summarise(media = round(valor[variable == "n_RTs"] / valor[variable == "n_retweeters"], 1)) %>%
+  pull(media)
+
+ggplot(df_long, aes(x = fct_rev(variable), y = valor, fill = tipo)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.7, color = "white") +
+  
+  # Etiquetas encima de las barras
+geom_text(
+  aes(
+    label = scales::label_number(
+      big.mark = ".", 
+      decimal.mark = ","
+    )(valor)
+  ),
+  color = COLOR_TEXTO,
+  position = position_dodge(width = 0.7),
+  vjust = -0.3,
+  size = 3.5
+) +
+
+  
+  # Quitamos eje Y y dejamos espacio arriba
+  scale_y_continuous(
+    labels = NULL,
+    breaks = NULL,
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  
+  scale_fill_manual(
+    values = c("Original" = col_original,
+               "Filtrado" = col_filtrado)
+    ) +
+  labs(
+    title = paste0(
+      "Comparación entre ",
+      "<span style='color:", col_original, ";'><b>Original</b></span>",
+      " y ",
+      "<span style='color:", col_filtrado, ";'><b>Filtrado</b></span>"
+    ),
+    x = "",
+    y = NULL
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none",
+    plot.title = element_markdown(size = 18, face = "bold")
+  ) +
+  # Añadir al ggplot:
+  annotate(
+    "text",
+    x = 2.7,        # ajusta posición horizontal
+    y = max(df_long$valor) * 0.8,   # ajusta altura
+    label = paste0(format(pct_rts, decimal.mark = ","),"% RTs desde\nUsuarios filtrados\n",format(media_rts, decimal.mark = ",")," RTs de media\npor perfil"),
+    color = col_filtrado,
+    size = 3.5,
+    fontface = "bold",
+    hjust = 0
+  ) +
+  annotate(
+    "curve",
+    x = 2.75,                          # origen flecha (mismo x que el texto)
+    xend = 2.15,                       # punta de la flecha (barra co-retweeters)
+    y = max(df_long$valor) * 0.65,
+    yend = df_long$valor[df_long$variable == "n_RTs" & df_long$tipo == "Filtrado"] * 1.4,
+    curvature = -0.3,
+    arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+    color = COLOR_TEXTO
+  ) 
+
+
+```
+
+## Análisis de los co-retweeters
+
+```{r Calcular_cocurrencias, message=FALSE, warning=FALSE, results='hide', echo=FALSE}
+#Calcular las cocurrencias
+# Las concurrencias se almacenan en el fichero co_retweets_file
+# Se calculan en Python por la rápidez
+n_parejas <- calcular_cocurrencias(res$retweets, co_retweets_file, as.integer(cfg$min_shared_tweets))
+
+```
+
+```{r sin_parejas, results='asis'}
+# Si no hay parejas que superen el umbral no se puede continuar el análisis
+if (n_parejas == 0) {
+  cat(glue("\n\n**No hay parejas de co-retweeters con al menos {cfg$min_shared_tweets} coincidencias.** ",
+           "Prueba a bajar `min_shared_tweets` o `min_retweets_msg`.\n\n"))
+  knitr::knit_exit()
+}
+```
+
+```{r analisis-leer, message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+# Leer fichero el fichero co_retweets_file
+co_retweets_df <- read_csv(
+    co_retweets_file,
+    show_col_types = FALSE
+  ) %>%
+  rename(weight = cocurrencias)
+
+```
+
+```{r analisis_red-comunidades, message=FALSE, warning=FALSE}
+
+
+co_retweets_g <- graph_from_data_frame(
+  d = co_retweets_df,
+  directed = FALSE
+)
+# Detectar comunidades. Se descartan las que tienen menos de min_members miembros.
+# El layout "circlepack" no funciona si una comunidad solo tiene un miembro
+
+resolution <- 1
+
+# Leiden con los parámetros por defecto. Semilla fija para que sea reproducible.
+detectar_comunidades <- function(g) {
+  set.seed(cfg$seed)
+  cluster_leiden(
+    g,
+    weights = E(g)$weight,
+    resolution_parameter = resolution
+  )
+}
+
+# Se repite hasta que todas las comunidades tienen al menos min_members nodos,
+# ya que al recalcular sobre el grafo filtrado pueden aparecer comunidades pequeñas
+retweeters_comm <- detectar_comunidades(co_retweets_g)
+repeat {
+  sizes_comm <- sizes(retweeters_comm)
+  valid <- as.integer(names(sizes_comm)[sizes_comm >= min_members])
+  if (length(valid) == length(sizes_comm)) break
+  nodos_validos <- which(membership(retweeters_comm) %in% valid)
+  if (length(nodos_validos) == 0) break
+  co_retweets_g <- induced_subgraph(co_retweets_g, nodos_validos)
+  retweeters_comm <- detectar_comunidades(co_retweets_g)
+}
+if (length(valid) == 0) {
+  stop(glue("Ninguna comunidad tiene al menos {min_members} miembros. Prueba a bajar min_members o min_shared_tweets."))
+}
+
+# Asignar comunidades y grado al grafo filtrado
+V(co_retweets_g)$community <- as.integer(membership(retweeters_comm))
+V(co_retweets_g)$degree <- degree(co_retweets_g)
+
+# Paleta de colores: una fila por comunidad
+n_comm <- max(V(co_retweets_g)$community)
+num_targets <- KPIs_raw_df$n_beneficiarios
+if (num_targets == 1) {
+  # Un único beneficiario: color único para todas las comunidades
+  pal <- rep(cfg$color, n_comm)
+} else if (n_comm <= 9) {
+  pal <- brewer.pal(max(3, n_comm), "Pastel1")[1:n_comm]
+} else {
+  # Pastel1 solo tiene 9 colores
+  pal <- qualitative_hcl(n_comm, palette = "Pastel 1")
+}
+V(co_retweets_g)$color <- pal[V(co_retweets_g)$community]
+retweeters_comm_colors <- tibble(
+  community = 1:n_comm,
+  color = pal
+)
+
+retweeters_comm_df <- tibble(
+  node = retweeters_comm$names,
+  community = as.integer(retweeters_comm$membership)
+)
+
+```
+
+### Comunidades
+
+Agrupación de los usuarios con conexiones más frecuentes.
+
+```{r analisis_red-Visualización, fig.height=16, fig.width=16, fig.retina=1, dpi=150, message=FALSE, warning=FALSE}
+
+retweeters_comm_ids <- sort(unique(V(co_retweets_g)$community))
+nodes_retweeters_comm <- tibble(
+  name = paste0("C", retweeters_comm_ids),
+  type = "community",
+  community = retweeters_comm_ids,
+  weight = 0
+)
+nodes_retweeters_real <- tibble(
+  name = V(co_retweets_g)$name,
+  type = "node",
+  community = V(co_retweets_g)$community,
+  weight = degree(co_retweets_g)
+)
+nodes <- bind_rows(nodes_retweeters_comm, nodes_retweeters_real)
+edges <- tibble(
+  from = paste0("C", V(co_retweets_g)$community),
+  to   = V(co_retweets_g)$name
+)
+
+
+tree <- tbl_graph(nodes = nodes, edges = edges, directed = TRUE)
+max_labels <- 50
+
+umbral_texto <- quantile(V(tree)$weight, 0.70, na.rm = TRUE)
+# Obtener layout de circlepack
+layout_cp <- ggraph::create_layout(tree, layout = "circlepack", weight = weight)
+nodes_df <- tibble(
+  name = V(tree)$name,
+  weight = V(tree)$weight
+)
+
+labels_df <- nodes_df %>%
+  filter(weight >= umbral_texto) %>%
+  arrange(desc(weight)) %>%
+  head(n = max_labels) %>%
+  left_join(layout_cp, by = "name") %>%
+  left_join(retweeters_comm_colors, by = "community") %>%
+  mutate(text_color = contrast_text(color, "white","black"))
+
+pal_named <- retweeters_comm_colors$color
+names(pal_named) <- retweeters_comm_colors$community
+
+ggraph(layout_cp) +
+  geom_node_circle(aes(fill = as.factor(community))) +
+  geom_text(
+    data = labels_df,
+    aes(
+      x = x,
+      y = y,
+      label = name,
+      size = weight.x,
+      color = text_color
+    )
+  ) +
+  labs(
+    title = glue("Comunidades de retweeters en el dataset de {cfg$prefix}"),
+    caption = cfg$author
+  ) +
+  scale_fill_manual(values = pal_named) +
+  scale_color_identity() +
+  scale_size(range = c(0.5, 6), guide = "none") +
+  coord_fixed() +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 25, color = COLOR_TEXTO),
+    plot.caption = element_text(hjust = 1, size = 15, color = COLOR_TEXTO)
+  )
+
+
+
+```
+
+```{r Co-retweerts-caracteristicas, message=FALSE, warning=FALSE}
+
+
+retweeters_metrics_df <- tibble(
+  Profile = names(degree(co_retweets_g)),
+  `Co-retweeters` = degree(co_retweets_g)
+) 
+retweeters_metrics_df <- retweeters_metrics_df %>%
+  left_join(origins_count_df, by = c("Profile" = "origin")) %>%
+  left_join(retweeters_comm_df, by = c("Profile" = "node")) %>%
+  left_join(retweeters_comm_colors, by = "community") %>%
+  rename(`Retweets made`= count) %>%
+  mutate(
+    Eigen = eigen_centrality(co_retweets_g)$vector
+  ) %>%
+  arrange(desc(`Co-retweeters`),desc(`Retweets made`))
+communities <- unique(retweeters_comm_df$community)
+
+
+```
+
+### Amplificación
+
+Número de retweets genrerados por los co-retweeters
+
+```{r co-retweetersamplificación, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+
+communities <- sort(unique(retweeters_metrics_df$community))
+for (comm in communities) {
+  cat("\n\n#### Comunidad", comm, "###\n")
+  df_comm <- retweeters_metrics_df %>% 
+    filter(community == comm) 
+  retweets_comm <-  retweets %>%
+    filter (origin %in% df_comm$Profile)
+  KPIs_comm_df <- tibble(
+    n_tweets = length(unique(retweets_comm$target)),
+    n_retweeters = length(unique(retweets_comm$origin)),
+    n_RTs = nrow(retweets_comm),
+    n_beneficiarios = length(unique(retweets_comm$user_target)),
+    tipo = "Co-retweeters"
+  )
+  df_long <- rbind(KPIs_raw_df, KPIs_comm_df) %>%
+  pivot_longer(
+    cols = c(n_tweets, n_retweeters, n_RTs, n_beneficiarios),
+    names_to = "variable",
+    values_to = "valor"
+  )
+  df_long$tipo <- factor(df_long$tipo, levels = c("Original", "Co-retweeters"))
+  # Colores elegidos
+  col_original <- "#1f78b4"
+  col_comm <- unique(df_comm$color)
+  color_anotacion <- darken(col_comm, amount = 0.4)
+  # Calcular el % antes del ggplot
+  pct_rts <- df_long %>%
+    filter(variable == "n_RTs") %>%
+    summarise(pct = round(valor[tipo == "Co-retweeters"] * 100 / valor[tipo == "Original"], 1)) %>%
+    pull(pct)
+  media_rts <- df_long %>%
+    filter(tipo == "Co-retweeters") %>%
+    summarise(media = round(valor[variable == "n_RTs"] / valor[variable == "n_retweeters"], 1)) %>%
+    pull(media)
+
+  p <- ggplot(df_long, aes(x = fct_rev(variable), y = valor, fill = tipo)) +
+    geom_col(position = position_dodge(width = 0.7), width = 0.7, color = "white") +
+  
+  # Etiquetas encima de las barras
+  geom_text(
+    aes(
+      label = scales::label_number(
+        big.mark = ".", 
+        decimal.mark = ","
+      )(valor)
+    ),
+    color = COLOR_TEXTO,
+    position = position_dodge(width = 0.7),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  # Quitamos eje Y y dejamos espacio arriba
+  scale_y_continuous(
+    labels = NULL,
+    breaks = NULL,
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_fill_manual(
+    values = c("Original" = col_original,
+               "Co-retweeters" = col_comm)
+    ) +
+  labs(
+    title = paste0(
+      "Comparación entre ",
+      "<span style='color:", col_original, ";'><b>Original</b></span>",
+      " y ",
+      "<span style='color:", color_anotacion, ";'><b>Co-retweeters</b></span>"
+    ),
+    x = "",
+    y = NULL
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none",
+    plot.title = element_markdown(size = 18, face = "bold")
+  ) +
+  # Añadir al ggplot:
+  annotate(
+    "text",
+    x = 2.7,        # ajusta posición horizontal
+    y = max(df_long$valor) * 0.8,   # ajusta altura
+    label = paste0(format(pct_rts, decimal.mark = ","),"% RTs desde\nco-retweeters\n",format(media_rts, decimal.mark = ",")," RTs de media\npor perfil"),
+    color = color_anotacion,
+    size = 3.5,
+    fontface = "bold",
+    hjust = 0
+  ) +
+  annotate(
+    "curve",
+    x = 2.75,                          # origen flecha (mismo x que el texto)
+    xend = 2.15,                       # punta de la flecha (barra co-retweeters)
+    y = max(df_long$valor) * 0.65,
+    yend = df_long$valor[df_long$variable == "n_RTs" & df_long$tipo == "Co-retweeters"] * 1.5,
+    curvature = -0.3,
+    arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+    color = COLOR_TEXTO
+  ) 
+  print(p)
+
+}
+
+
+
+```
+
+### Distribución
+
+```{r co-retweeters histograma, message=FALSE, warning=FALSE}
+
+for (comm in communities) {
+
+  # Filtrar datos de esa comunidad
+  df_comm <- retweeters_metrics_df %>% 
+    filter(community == comm)
+  
+  # Calcular breaks específicos
+  # (si todos tienen el mismo valor se amplía el rango para tener al menos un intervalo)
+  rango <- range(df_comm$`Co-retweeters`)
+  if (rango[1] == rango[2]) rango <- rango + c(-1, 1)
+  breaks_comm <- pretty(rango, n = 10)
+  
+  # Calcular bins
+  h <- hist(df_comm$`Co-retweeters`, breaks = breaks_comm, plot = FALSE)
+  
+  bins_df <- tibble(
+    x = (h$breaks[-length(h$breaks)] + h$breaks[-1]) / 2,
+    count = h$counts,
+    label = paste0(h$breaks[-length(h$breaks)], "\na\n", h$breaks[-1])
+  )
+  
+  # Color de la comunidad
+  color_comm <- unique(df_comm$color)
+  
+  # Gráfico
+  p <- ggplot(df_comm, aes(x = `Co-retweeters`)) +
+    geom_histogram(
+      breaks = breaks_comm,
+      fill = color_comm,
+      color = "white"
+    ) +
+    geom_text(
+      data = bins_df,
+      aes(x = x, y = count, label = count),
+      vjust = -0.3,
+      size = 3,
+      inherit.aes = FALSE
+    ) +
+    scale_x_continuous(
+      breaks = bins_df$x,
+      labels = bins_df$label
+    ) +
+    labs(
+      title = paste("Histograma de Co-retweeters – Comunidad", comm),
+      x = "",
+      y = "Frecuencia"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(color = COLOR_TEXTO),
+      axis.title.x = element_text(color = COLOR_TEXTO),
+      axis.title.y = element_text(color = COLOR_TEXTO),
+      axis.text.x = element_text(color = COLOR_TEXTO),
+      axis.text.y = element_text(color = COLOR_TEXTO)
+    )
+  
+  
+  print(p)   # Mostrar en pantalla
+  
+  # Si quieres guardarlo:
+  # ggsave(paste0("hist_comunidad_", comm, ".png"), p, width = 8, height = 5)
+}
+
+
+
+
+
+```
+
+### Co-retweeters vs. retweets
+
+```{r correlación_retweets-co-retweeters, message=FALSE, warning=FALSE}
+
+communities <- sort(unique(retweeters_metrics_df$community))
+
+for (comm in communities) {
+  
+  # Filtrar datos de esa comunidad
+  df_comm <- retweeters_metrics_df %>% 
+    filter(community == comm)
+  
+  # Calcular correlación
+  corr_value <- cor(
+    df_comm$`Retweets made`,
+    df_comm$`Co-retweeters`,
+    use = "complete.obs",
+    method = "pearson"
+  )
+  # Color de la comunidad
+  color_comm <- unique(df_comm$color)
+  # Gráfica
+  p <- ggplot(df_comm,
+              aes(x = `Co-retweeters`, y = `Retweets made`)) +
+    geom_point(alpha = 1, color =  color_comm) +
+    geom_smooth(method = "lm", se = FALSE, color = "darkred") +
+    annotate(
+      "text",
+      x = Inf, y = Inf,
+      label = paste0("r = ", round(corr_value, 3)),
+      hjust = 1.1, vjust = 1.5,
+      size = 3,
+      fontface = "bold"
+    ) +
+    labs(
+      title = paste("Relación entre Co-retweeters y Retweets – Comunidad", comm),
+      x = "Co-retweeters",
+      y = "Retweets"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(color = COLOR_TEXTO),
+      axis.title.x = element_text(color = COLOR_TEXTO),
+      axis.title.y = element_text(color = COLOR_TEXTO),
+      axis.text.x = element_text(color = COLOR_TEXTO),
+      axis.text.y = element_text(color = COLOR_TEXTO)
+    )
+  
+  print(p)
+  
+  # Si quieres guardarlo:
+  # ggsave(paste0("correlacion_comunidad_", comm, ".png"), p, width = 7, height = 5)
+}
+
+
+```
+
+### Top co-retweeters
+
+Los [`r top_users`]{style="color:red"} usuarios más relevantes ordenados decrecientemente por su número de co-retweeters y retweets
+
+```{r co-retweeters relevantes, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+head_flag = TRUE
+append_flag = FALSE
+communities <- sort(unique(retweeters_metrics_df$community))
+for (comm in communities) {
+  cat("\n\n#### Comunidad", comm, "###\n")
+
+  # Guardar en CSV con los valores numéricos, antes de formatearlos
+  df_comm_raw <- retweeters_metrics_df %>%
+    filter(community == comm)
+  write_csv(df_comm_raw, co_retweets_tot_file, col_names = head_flag, append = append_flag)
+  write_csv(head(df_comm_raw, top_users), co_retweets_top_file, col_names = head_flag, append = append_flag)
+  head_flag = FALSE
+  append_flag = TRUE
+
+  ###### Tabla de los TOP
+  df_comm <- df_comm_raw %>%
+    mutate(
+      across(
+        c(`Co-retweeters`, `Retweets made`, Eigen),
+        ~ format(.x, big.mark = ".", decimal.mark = ",", scientific = FALSE)
+    )
+  )
+  color_comm <- unique(df_comm$color)
+  color_text <- contrast_text(color_comm, "white","black")
+  n <- min(top_users, nrow(df_comm))
+  title = glue("Co-retweets destacados de la comunidad {comm} en el dataset de {cfg$prefix}")
+  print(
+    df_comm %>%
+      select(community,Profile, `Co-retweeters`,`Retweets made`,Eigen) %>% 
+      head(top_users) %>%
+      kable(
+        "html",
+        escape = FALSE,
+        align = c("c", "l", "r", "r", "r"),
+        caption = title
+      ) %>%
+      kable_styling(full_width = FALSE) %>%
+      row_spec(1:n, background = color_comm, color= color_text))
+}
+
+
+
+```
+
+### Top de parejas de co-retweeters
+
+Las [`r top_users`]{style="color:red"} parejas con más coincidencia en sus retweets. Es decir, ambos han coincidido en retweetear el número de tweets de la columna [weight]{style="color:red"}.
+
+Muestra visualmente las conexiones de como máximo los [`r nodos_grafo_co_retweeters`]{style="color:red"} perfiles con más co-retweeters de cada comunidad (todos si la comunidad tiene menos), mediante un algoritmo que atrae a los más coincidentes. El porcentaje que representan sobre el total de la comunidad se indica junto a cada grafo.
+
+```{r Top de co-retweeters, echo=FALSE, fig.height=12, fig.width=12, message=FALSE, warning=FALSE, results='asis'}
+
+edges <- as_data_frame(co_retweets_g, what = "edges")
+edges$comm_from <- V(co_retweets_g)$community[ match(edges$from, V(co_retweets_g)$name) ]
+edges$comm_to   <- V(co_retweets_g)$community[ match(edges$to,   V(co_retweets_g)$name) ]
+edges_top <- edges %>%
+  filter(comm_from == comm_to) %>%
+  rename(
+    `Profile 1` = from,
+    `Profile 2` = to,
+    `Coincidences` = weight,
+    community = comm_from
+  ) %>%
+  group_by(community) %>%
+  slice_max(order_by = `Coincidences`, n = top_users) %>%
+  ungroup() %>%
+  left_join(origins_count_df, by = c("Profile 1" = "origin")) %>%
+  rename(`Retweets made profile 1` = count) %>%
+  left_join(origins_count_df, by = c("Profile 2" = "origin")) %>%
+  rename(`Retweets made profile 2` = count) %>%
+  mutate(`% Coincidences profile 1` = paste0(format(round((Coincidences * 100) / `Retweets made profile 1`, 2), decimal.mark = ","), "%")) %>%
+  mutate(`% Coincidences profile 2` = paste0(format(round((Coincidences * 100) / `Retweets made profile 2`, 2), decimal.mark = ","), "%")) %>%
+  left_join(retweeters_comm_colors, by = "community") 
+communities <- sort(unique(retweeters_metrics_df$community))
+for (comm in communities) {
+  cat("\n\n#### Comunidad", comm, "###\n")
+  # -----------------------------------------
+  # Top parejas de co-retweeters
+  # -----------------------------------------
+  df_comm <- edges_top %>% 
+    filter(community == comm) %>%
+    mutate(
+      across(
+        c(`Coincidences`,`% Coincidences profile 1`, `% Coincidences profile 2`),
+        ~ format(.x, big.mark = ".", decimal.mark = ",", scientific = FALSE)
+      )
+    )
+  color_comm <- unique(df_comm$color)
+  color_text <- contrast_text(color_comm, "white","black")
+  n <- min(top_users, nrow(df_comm))
+  title = glue("Parejas de co-retweets destacados de la comunidad {comm} en el dataset de {cfg$prefix}")
+  print(
+    df_comm %>%
+      head(top_users) %>%
+      select(community,`Profile 1`,`Profile 2`, `Coincidences`, `% Coincidences profile 1`, `% Coincidences profile 2`) %>% 
+      kable(
+        "html",
+        escape = FALSE,
+        align = c("c", "l", "l", "r","r"),
+        caption = title
+      ) %>%
+      kable_styling(full_width = FALSE) %>%
+      row_spec(1:n, background = color_comm, color= color_text))
+
+  # -----------------------------------------
+  # Grafo co_retweeters
+  # -----------------------------------------
+  #
+  # Seleccionar como máximo nodos_grafo_co_retweeters nodos con más grado
+  # Crear el subgrafo filtrando por atributos
+
+  # vector de colores para nodos
+  co_retweeters_comm_g <- induced_subgraph(
+    co_retweets_g,
+    vids = V(co_retweets_g)[ community == comm]
+  )
+  n_total_co_retweeters <- vcount(co_retweeters_comm_g)
+  n_objetivo_co_retweeters <- min(nodos_grafo_co_retweeters, n_total_co_retweeters)
+  umbral_co_retweeters_top <- sort(V(co_retweeters_comm_g)$degree, decreasing = TRUE)[n_objetivo_co_retweeters]
+  co_retweeters_comm_g <- induced_subgraph(
+    co_retweeters_comm_g,
+    vids = V(co_retweeters_comm_g)[ degree >= umbral_co_retweeters_top]
+  )
+  percen_co_retweeters_top <- round(100 * n_objetivo_co_retweeters / n_total_co_retweeters)
+   # Atributos de nodo
+    colores_nodos <- retweeters_comm_colors$color[
+      match(V(co_retweeters_comm_g)$community, retweeters_comm_colors$community)
+]
+  # asignar nombres al vector (necesario para colorear aristas)
+  names(colores_nodos) <- V(co_retweeters_comm_g)$name
+  cat(glue("\nSe muestran los {n_objetivo_co_retweeters} perfiles con más grado ({percen_co_retweeters_top}% de la comunidad).\n"))
+  title = glue("Relaciones de los co-retweets de la comunidad {comm} en el dataset de {cfg$prefix}")
+  g <- set_attrib_force_atlas_2(co_retweeters_comm_g, retweeters_comm_df, colores_nodos)
+  p <- draw_force_atlas_2(g, title, cfg$author)
+  print(p)
+
+}
+```
+
+## Beneficiarios
+
+Para cada comunidad se genera un grafo de las relaciones entre los co-retweeters y los retuiteados, a los que se denomina como **"beneficiarios"**
+
+El layout aplicado es **Force Atlas-2** con los siguientes parámetros:
+
+-   iterations = 300
+-   gravity = 2
+-   linlog = TRUE
+
+Para generar un grafo más ligero y disminuir el tiempo de visualización, se han seleccionado como máximo los [`r nodos_grafo_beneficiarios`]{style="color:red"} perfiles con más co-retweeters de cada comunidad (todos si la comunidad tiene menos). El porcentaje que representan sobre el total de la comunidad se indica junto a cada grafo.
+
+En caso de haber solo un beneficiario, por ejemplo el análisis de un perfil, no se muestra el grafo al no aportar información relevante.
+
+Para generar un etiquetado claro de los nodos, solo se muestran aquellos que se encuentran en el grupo del 30% con más grado. Se utiliza la opción de **repel** para evitar que se solapen, en la medida de los posible.
+
+El color de los nodos **beneficiarios** es siempre naranja y el de los co-retweeters el de su comunidad.
+
+Las aristas son del color del nodo origen, es decir de los co-retweeeters.
+
+```{r analisis_red-beneficiarios, fig.height=12, fig.width=12, message=FALSE, warning=FALSE, results='asis'}
+
+
+for (comm in communities) {
+
+    cat("\n\n### Comunidad", comm, "\n")
+
+  # Generar grafo de beneficiarios
+  # Nodos de la comunidad
+  nodes_comm <- retweeters_comm_df %>% 
+    filter(community == comm) %>% 
+    pull(node)
+  # Edges donde origin pertenece a la comunidad
+  edges_comm <- retweets %>%
+    filter(origin %in% nodes_comm) %>%
+    count(origin, user_target, name = "weight") %>%
+    as.data.frame()
+    # Reducir el tamaño del grafo para renderizarlo
+  beneficiarios_comm_g <- graph_from_data_frame(edges_comm, directed = TRUE)
+  V(beneficiarios_comm_g)$degree <- degree(beneficiarios_comm_g)
+  
+  # Atributos de nodo
+  nodos_origen <- unique(edges_comm$origin)
+
+  # vector de colores para nodos
+  colores_nodos <- ifelse(
+    V(beneficiarios_comm_g)$name %in% nodos_origen,
+      retweeters_comm_colors$color[retweeters_comm_colors$community == comm],
+     "#FFA500"
+  )
+  # asignar nombres al vector (necesario para colorear aristas)
+  names(colores_nodos) <- V(beneficiarios_comm_g)$name
+  # -----------------------------------------
+  # Atributos de nodos 
+  # -----------------------------------------
+  beneficiarios_comm_g <- set_attrib_force_atlas_2(
+    beneficiarios_comm_g,
+    retweeters_comm_df,
+    colores_nodos)
+
+  # -----------------------------------------
+  # Top beneficiarios
+  # -----------------------------------------
+  beneficiarios_metrics_df <- tibble(
+    Profile = V(beneficiarios_comm_g)$name,
+   `Retweets from co-retweeters` = V(beneficiarios_comm_g)$in_degree_w
+  )
+  beneficiarios_metrics_df <- beneficiarios_metrics_df %>%
+    # Solo los nodos que han recibido RTs de la comunidad (beneficiarios)
+    filter(Profile %in% edges_comm$user_target) %>%
+    left_join(users_target_count_df, by = c("Profile" = "user_target")) %>%
+    rename(`Retweets received` = count) %>%
+    mutate(`% Amplification` = paste0(format(round(((`Retweets from co-retweeters` * 100) / `Retweets received`), 2), decimal.mark = ","), "%")) %>%
+    arrange(desc(`Retweets from co-retweeters`)) %>%
+    mutate(
+      community = comm,   # <--- asignar comunidad actual
+      color = retweeters_comm_colors$color[retweeters_comm_colors$community == comm]
+     ) %>%
+    mutate(
+      across( c(`Retweets from co-retweeters`,`Retweets received`, `% Amplification`),
+      ~ format(.x, big.mark = ".", decimal.mark = ",", scientific = FALSE) )
+    )  %>%
+    slice(1:top_users) 
+  color_comm <- unique(beneficiarios_metrics_df$color)
+  color_text <- contrast_text(color_comm, "white","black")
+  n <- min(top_users, nrow(beneficiarios_metrics_df))
+  title = glue("Beneficiarios destacados de la comunidad {comm} en el dataset de {cfg$prefix}")
+  print(
+    beneficiarios_metrics_df %>%
+    select(-color) %>% 
+    kable(
+      "html",
+      align = c("l", "r", "r", "r", "r"),
+      escape = FALSE,
+      caption = title
+    ) %>%
+    kable_styling(full_width = FALSE) %>%
+    row_spec(1:n, background = color_comm, color= color_text)
+   )
+  # -----------------------------------------
+  # Grafo beneficiarios
+  # -----------------------------------------
+
+  # Seleccionar como máximo nodos_grafo_beneficiarios nodos con más grado
+  # Crear el subgrafo filtrando por atributos
+  n_total_nodos <- vcount(beneficiarios_comm_g)
+  n_objetivo <- min(nodos_grafo_beneficiarios, n_total_nodos)
+  umbral_degree <- sort(V(beneficiarios_comm_g)$degree, decreasing = TRUE)[n_objetivo]
+  beneficiarios_comm_g <- induced_subgraph(
+    beneficiarios_comm_g,
+    vids = V(beneficiarios_comm_g)[degree >= umbral_degree]
+  )
+  percen_co_retweeters <- round(100 * n_objetivo / n_total_nodos)
+
+  # Solo se dibuja el grafo si tiene más de un beneficiario
+
+  num_targets <- length (unique(edges_comm$user_target))
+  if (num_targets > 1) {
+
+  cat(glue("\nSe muestran los {n_objetivo} perfiles con más grado ({percen_co_retweeters}% de la comunidad).\n"))
+  title = glue("Beneficiarios de los co-retweets de la comunidad {comm} en el dataset de {cfg$prefix}")
+  p <- draw_force_atlas_2(beneficiarios_comm_g, title, cfg$author)
+  print(p)
+  } else {
+    cat("\nSolo hay un beneficiario, no se genera el grafo por no ser necesario\n")
+  }  
+}
+
+```

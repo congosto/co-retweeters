@@ -1,0 +1,18 @@
+# Plantilla de configuración local.
+# Cópiala como config.local.yml (no se sube a GitHub) y rellénala.
+# Cualquier parámetro del YAML del Rmd se puede sustituir aquí.
+
+dataset_name: "mi_dataset"
+prefix: "mi_dataset"
+# min_retweets_msg: 50
+# min_shared_tweets: 50
+
+# Valores propios de cada ordenador. La clave es el nombre del equipo,
+# que en R se ve con Sys.info()[["nodename"]]
+equipos:
+  MI_PORTATIL:
+    python_mode: "python"
+    python_path: "C:/ruta/a/python.exe"
+  MI_SOBREMESA:
+    python_mode: "conda"
+    conda_env: "reticulate"
