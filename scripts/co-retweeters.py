@@ -45,9 +45,11 @@ def contar(serie, nombre):
 def get_RTs(base_path, prefix, min_RTs, max_RTs, min_cocurrencias):
 
   RTs_file = os.path.join(base_path, f'{prefix}_RTs.csv')
-  # Leer CSV
+  # Leer CSV: solo las columnas necesarias, para ahorrar memoria
+  # (desde R, Python se ejecuta dentro del mismo proceso y no libera la memoria)
+  columnas = ["username", "url_rt", "user_retweeted"]
   retweets = (
-    pd.read_csv(RTs_file, dtype=str)
+    pd.read_csv(RTs_file, dtype=str, usecols=lambda c: c in columnas)
       # Quitamos repetidos por username + url_rt
       .drop_duplicates(subset=["username", "url_rt"])
       # Renombrar columnas
