@@ -90,6 +90,12 @@ def get_RTs(base_path, prefix, min_RTs, max_RTs, min_cocurrencias):
   # RTs hechos por cada retweeter dentro del dataset filtrado
   origins_count = contar(retweets["origin"], "origin")
 
+  # pandas >= 3 guarda el texto como ArrowStringArray, que reticulate no
+  # convierte a R. Se pasa a object para que funcione con cualquier versión
+  retweets = retweets.astype(object)
+  origins_count["origin"] = origins_count["origin"].astype(object)
+  users_target_count["user_target"] = users_target_count["user_target"].astype(object)
+
   return {
     "retweets": retweets,
     "origins_count": origins_count,
