@@ -71,6 +71,12 @@ def get_RTs(base_path, prefix, min_RTs, max_RTs, min_cocurrencias):
   retweets = retweets[["origin", "target", "user_target"]].dropna(subset=["origin", "target"])
 
   KPIs_raw = calcular_KPIs(retweets)
+  # n_tweets original: total de tweets del fichero <prefix>.csv, no solo
+  # los que tienen algún RT. Si no existe, se queda el de los RTs
+  tweets_file = os.path.join(base_path, f'{prefix}.csv')
+  if os.path.exists(tweets_file):
+    ids = pd.read_csv(tweets_file, dtype=str, usecols=["id"])["id"]
+    KPIs_raw["n_tweets"] = int(ids.dropna().nunique())
   # RTs recibidos por cada beneficiario en el dataset completo
   users_target_count = contar(retweets["user_target"], "user_target")
 
